@@ -43,7 +43,8 @@ SOURCES += src/main.cpp \
 
 OTHER_FILES += translations/*.ts \
     slaq.desktop \
-    slaq.png
+    slaq.png \
+    .travis.yml
 
 HEADERS += \
     src/slackclient.h \
