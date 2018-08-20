@@ -17,6 +17,14 @@ MouseArea {
     // counts as same if previouse user is same and last message was within 3 minutes
     readonly property bool sameuser: model.SameUser && model.TimeDiff < 180000
 
+    function updateText() {
+        var editedText = contentLabel.getText(0, contentLabel.text.length);
+        SlackClient.updateMessage(teamRoot.teamId, channelId, editedText, model.Time)
+        contentLabel.focus = false
+        contentLabel.readOnly = true
+        input.forceActiveFocus()
+    }
+
     Connections {
         target: emojiSelector
         enabled: itemDelegate.emojiSelectorCalled
@@ -45,9 +53,7 @@ MouseArea {
                 y: Theme.paddingMedium/2
                 visible: !sameuser || (isReplies && model.ThreadIsParentMessage)
                 sourceSize: visible ? Qt.size(Theme.avatarSize, Theme.avatarSize) : Qt.size(0, 0)
-                cache: true
-                asynchronous: true
-                source: visible && model.User != null ? model.User.avatarUrl : "http://www.gravatar.com/avatar/default?d=identicon"
+                source: visible && model.User != null ? "image://emoji/slack/" + model.User.avatarUrl : "http://www.gravatar.com/avatar/default?d=identicon"
             }
 
             Column {
@@ -77,7 +83,7 @@ MouseArea {
                             cache: false
                             source: visible ? "image://emoji/" + User.statusEmoji.slice(1, -1) : ""
                         }
-                        Text {
+                        Label {
                             visible: ImagesCache.isUnicode
                             text: User != null ? ImagesCache.getEmojiByName(User.statusEmoji.slice(1, -1)) : ""
                             font.family: "Twitter Color Emoji"
@@ -166,11 +172,7 @@ MouseArea {
                                     contentLabel.readOnly = false
                                     contentLabel.forceActiveFocus();
                                 } else {
-                                    var editedText = contentLabel.getText(0, contentLabel.text.length);
-                                    SlackClient.updateMessage(teamRoot.teamId, channelId, editedText, model.Time)
-                                    contentLabel.focus = false
-                                    contentLabel.readOnly = true
-                                    input.forceActiveFocus()
+                                    updateText()
                                 }
                             }
                         }
@@ -206,11 +208,27 @@ MouseArea {
                         }
                     }
                     onEditingFinished: {
-                        undo();
-                        readOnly = true
-                        input.forceActiveFocus()
+                        //undo editing if new focus is not edit save button
+                        if (editButton.focus == false) {
+                            undo();
+                            readOnly = true
+                            input.forceActiveFocus()
+                        }
                     }
-                    wrapMode: Text.Wrap
+                    Keys.onReturnPressed: {
+                        if (readOnly == false && event.modifiers == 0) {
+                            updateText()
+                        }
+                        event.accepted = false
+                    }
+
+                    Keys.onEnterPressed: {
+                        if (readOnly == false && event.modifiers == 0) {
+                            updateText()
+                        }
+                        event.accepted = false
+                    }
+                    wrapMode: Text.WordWrap
 
                     // To avoid the border on some styles, we only want a textarea to be able to select things
                     background: Item {}
@@ -244,7 +262,7 @@ MouseArea {
                             id: repliesRepeater
                             model: ThreadReplies
                             Image {
-                                source: ThreadReplies[index].user.avatarUrl
+                                source: "image://emoji/slack/" + ThreadReplies[index].user.avatarUrl
                                 sourceSize: Qt.size(16, 16)
                             }
                         }

@@ -80,16 +80,17 @@ public:
 
 class ReplyField: public QObject  {
     Q_OBJECT
-    Q_PROPERTY(User* user MEMBER m_user CONSTANT)
+    Q_PROPERTY(User* user READ user CONSTANT)
     Q_PROPERTY(QDateTime ts MEMBER m_ts CONSTANT)
 
 public:
     ReplyField(QObject* parent = nullptr);
     void setData(const QJsonObject &data);
 
-    User* m_user;
+    QPointer<User> m_user;
     QString m_userId;
     QDateTime m_ts;
+    User* user() const { return m_user.data(); }
 };
 
 //TODO: implement actions
@@ -246,10 +247,6 @@ public:
 };
 
 struct Message {
-private:
-    Q_GADGET
-    Q_PROPERTY(QDateTime threadts MEMBER thread_ts)
-public:
     Message();
     ~Message();
     void setData(const QJsonObject &data);
@@ -300,8 +297,6 @@ public:
     }
 };
 
-Q_DECLARE_METATYPE(Message)
-
 class MessageListModel : public QAbstractListModel
 {
     Q_OBJECT
@@ -341,7 +336,7 @@ public:
 public slots:
     void addMessage(Message *message);
     void updateMessage(Message *message);
-    void addMessages(const QList<Message *> &messages, bool hasMore);
+    void addMessages(const QList<Message *> &messages, bool hasMore, int threadMsgsCount);
     Message* message(const QDateTime& ts);
     bool deleteMessage(const QDateTime& ts);
     Message* message(int row);

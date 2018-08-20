@@ -16,11 +16,12 @@
 
 #include "slackclient.h"
 #include "imagescache.h"
+#include "debugblock.h"
 
 #include "MessagesModel.h"
 
-SlackTeamClient::SlackTeamClient(const QString &teamId, const QString &accessToken, QObject *parent) :
-    QObject(parent), appActive(true), activeWindow("init"), networkAccessible(QNetworkAccessManager::Accessible)
+SlackTeamClient::SlackTeamClient(QObject *spawner, const QString &teamId, const QString &accessToken, QObject *parent) :
+    QObject(parent), appActive(true), activeWindow("init"), networkAccessible(QNetworkAccessManager::Accessible), m_spawner(spawner)
 {
     DEBUG_BLOCK;
     QQmlEngine::setObjectOwnership(&m_teamInfo, QQmlEngine::CppOwnership);
@@ -204,6 +205,7 @@ void SlackTeamClient::handleStreamMessage(const QJsonObject& message)
         parseChannelUpdate(message);
     } else if (type == QStringLiteral("channel_joined") || type == QStringLiteral("group_joined")) {
         Chat* _chat = new Chat(message.value(QStringLiteral("channel")).toObject());
+        QQmlEngine::setObjectOwnership(_chat, QQmlEngine::CppOwnership);
         emit channelJoined(_chat);
     } else if (type == QStringLiteral("im_open")) {
         emit chatJoined(message.value(QStringLiteral("channel")).toString());
@@ -237,6 +239,15 @@ void SlackTeamClient::handleStreamMessage(const QJsonObject& message)
         qDebug() << "user joined to channel" << message.value(QStringLiteral("user")).toString();
     } else if (type == QStringLiteral("pong")) {
     } else if (type == QStringLiteral("hello")) {
+    } else if (type == QStringLiteral("emoji_changed")) {
+        const QString& subtype = message.value(QStringLiteral("subtype")).toString();
+        if (subtype == "add") {
+            const QString& name = message.value(QStringLiteral("name")).toString();
+            const QString& url = message.value(QStringLiteral("value")).toString();
+            addTeamEmoji(name, url);
+            ImagesCache::instance()->sendEmojisUpdated();
+            m_teamInfo.setTeamsEmojisUpdated(true);
+        }
     } else if (type == QStringLiteral("dnd_updated") || type == QStringLiteral("dnd_updated_user")) {
         parseUserDndChange(message);
     } else {
@@ -251,6 +262,10 @@ void SlackTeamClient::parseChannelUpdate(const QJsonObject& message)
     //qDebug().noquote() << "channel updated" << QJsonDocument(channelData).toJson();
     const QString& channelId = message.value(QStringLiteral("channel")).toString();
     ChatsModel* _chatsModel = m_teamInfo.chats();
+    if (_chatsModel == nullptr) {
+        qWarning() << "Chats model not yet allocated";
+        return;
+    }
     Chat* chat = _chatsModel->chat(channelId);
     if (chat == nullptr) {
         qWarning() << "Chat for channel ID" << channelId << "not found";
@@ -291,11 +306,18 @@ void SlackTeamClient::parseMessageUpdate(const QJsonObject& message)
     if (_chatsModel == nullptr) {
         return;
     }
-    MessageListModel *_messagesModel = _chatsModel->messages(channel_id);
-    if (_messagesModel == nullptr) {
-        return;
+
+    //fill up users for replys
+    UsersModel* _usersModel = m_teamInfo.users();
+    for(QObject* rplyObj : message_->replies) {
+        ReplyField* rply = static_cast<ReplyField*>(rplyObj);
+        rply->m_user = _usersModel->user(rply->m_userId);
     }
-    _messagesModel->preprocessFormatting(_chatsModel, message_);
+
+    MessageListModel *_messagesModel = _chatsModel->messages(channel_id);
+    if (_messagesModel != nullptr) {
+        _messagesModel->preprocessFormatting(_chatsModel, message_);
+    }
 
     if (subtype == "message_changed" || subtype == "message_replied") {
        qDebug().noquote() << "message changed" << QJsonDocument(message).toJson();
@@ -331,13 +353,13 @@ void SlackTeamClient::parseReactionUpdate(const QJsonObject &message)
     if (_chatsModel == nullptr) {
         return;
     }
-    MessageListModel* messages = _chatsModel->messages(channelid);
+    MessageListModel* _messagesModel = _chatsModel->messages(channelid);
 
-    if (messages == nullptr) {
+    if (_messagesModel == nullptr) {
         qWarning() << "No messages for channel id:" << channelid;
         return;
     }
-    Message* m = messages->message(ts);
+    Message* m = _messagesModel->message(ts);
     if (m != nullptr) {
         qDebug() << "found message at" << ts << "with reactions" << m->reactions.size();
         const QString& reaction = message.value(QStringLiteral("reaction")).toString();
@@ -356,6 +378,7 @@ void SlackTeamClient::parseReactionUpdate(const QJsonObject &message)
         if (type == "reaction_added") {
             if (r == nullptr) {
                 r = new Reaction;
+                QQmlEngine::setObjectOwnership(r, QQmlEngine::CppOwnership);
                 QString emojiPrepare = QString(":%1:").arg(reaction);
                 qDebug() << "added new reaction" << emojiPrepare;
                 MessageFormatter _formatter;
@@ -363,6 +386,7 @@ void SlackTeamClient::parseReactionUpdate(const QJsonObject &message)
                 r->emoji = emojiPrepare;
                 r->name = reaction;
                 m->reactions.append(r);
+                qDebug() << "added new reaction" << emojiPrepare << m->reactions.count();
             }
             r->userIds << userid;
         } else if (type == "reaction_removed") {
@@ -373,6 +397,7 @@ void SlackTeamClient::parseReactionUpdate(const QJsonObject &message)
             m->reactions.removeOne(r);
             r->deleteLater();
         }
+        _messagesModel->preprocessFormatting(_chatsModel, m);
         emit messageUpdated(m);
     } else {
         qWarning() << "message not found for ts" << ts;
@@ -739,10 +764,6 @@ void SlackTeamClient::handleSearchMessagesReply()
 void SlackTeamClient::startClient()
 {
     DEBUG_BLOCK
-    if (thread() != QThread::currentThread()) {
-        QMetaObject::invokeMethod(this, "startClient", Qt::QueuedConnection);
-        return;
-    }
 
     qDebug() << "Start init";
     QMap<QString, QString> params;
@@ -776,10 +797,13 @@ void SlackTeamClient::handleStartReply()
     }
     m_teamInfo.parseSelfData(data.value("self").toObject());
 
+    // invoke on the main thread
+    QMetaObject::invokeMethod(qApp, [this]{ m_teamInfo.createModels(); });
+
     QUrl url(data.value(QStringLiteral("url")).toString());
     stream->listen(url);
     m_status = STARTED;
-    qDebug() << "connect success";
+    qDebug() << "connect success" << QThread::currentThreadId();
 }
 
 QStringList SlackTeamClient::getNickSuggestions(const QString &currentText, const int cursorPosition)
@@ -1134,10 +1158,23 @@ void SlackTeamClient::handleTeamInfoReply()
             m_teamInfo.parseTeamInfoData(data.value("team").toObject());
             config->saveTeamInfo(m_teamInfo);
             emit teamInfoChanged(m_teamInfo.teamId());
-            requestUsersList("");
         }
         //qDebug() << "teaminfo:" << data;
     }
+    requestUsersList("");
+}
+
+void SlackTeamClient::addTeamEmoji(const QString& name, const QString& url) {
+    ImagesCache* imagesCache = ImagesCache::instance();
+    EmojiInfo *einfo = new EmojiInfo;
+    einfo->m_name = name;
+    einfo->m_shortNames << name;
+    einfo->m_image = url;
+    einfo->m_imagesExist |= EmojiInfo::ImageSlackTeam;
+    einfo->m_category = EmojiInfo::EmojiCategoryCustom;
+    einfo->m_teamId = m_teamInfo.teamId();
+    //qDebug() << "edding emoji" << einfo->m_shortNames << einfo->m_image << einfo->m_category;
+    imagesCache->addEmoji(einfo);
 }
 
 void SlackTeamClient::handleTeamEmojisReply()
@@ -1158,15 +1195,7 @@ void SlackTeamClient::handleTeamEmojisReply()
         if (emoji_url.startsWith("alias:")) {
             imagesCache->addEmojiAlias(name, emoji_url.remove(0, 6));
         } else {
-            EmojiInfo *einfo = new EmojiInfo;
-            einfo->m_name = name;
-            einfo->m_shortNames << name;
-            einfo->m_image = emoji_url;
-            einfo->m_imagesExist |= EmojiInfo::ImageSlackTeam;
-            einfo->m_category = EmojiInfo::EmojiCategoryCustom;
-            einfo->m_teamId = m_teamInfo.teamId();
-            //qDebug() << "edding emoji" << einfo->m_shortNames << einfo->m_image << einfo->m_category;
-            imagesCache->addEmoji(einfo);
+            addTeamEmoji(name, emoji_url);
         }
     }
     imagesCache->sendEmojisUpdated();
@@ -1199,6 +1228,7 @@ void SlackTeamClient::loadMessages(const QString& channelId, const QDateTime& la
             _latest = mesgs->firstMessageTs();
         }
     }
+    params.insert(QStringLiteral("count"), "50");
     if (_latest.isValid()) {
         params.insert(QStringLiteral("latest"), dateTimeToSlack(_latest));
         params.insert(QStringLiteral("inclusive"), "0");
@@ -1235,7 +1265,7 @@ void SlackTeamClient::handleLoadMessagesReply()
         return;
     }
     if (!_chatsModel->hasChannel(channelId)) {
-        qWarning() << "Team" << m_teamInfo.teamId() << "does not have channel" << channelId;
+        qWarning() << __PRETTY_FUNCTION__ << "Team" << m_teamInfo.teamId() << "does not have channel" << channelId;
         return;
     }
 
@@ -1256,6 +1286,7 @@ void SlackTeamClient::handleLoadMessagesReply()
 
     QList<Message*> _mlist;
     UsersModel* _usersModel = m_teamInfo.users();
+    int threadMsgsCount = 0;
     for (const QJsonValue &messageData : messageList) {
         const QJsonObject messageObject = messageData.toObject();
         if (messageObject.value(QStringLiteral("subtype")).toString() == "file_comment") {
@@ -1276,16 +1307,20 @@ void SlackTeamClient::handleLoadMessagesReply()
         }
 
         //fill up users for replys
+        UsersModel* _usersModel = m_teamInfo.users();
         for(QObject* rplyObj : message->replies) {
             ReplyField* rply = static_cast<ReplyField*>(rplyObj);
             rply->m_user = _usersModel->user(rply->m_userId);
         }
         messageModel->preprocessFormatting(_chatsModel, message);
+        if (messageModel->isMessageThreadChild(message)) {
+            threadMsgsCount++;
+        }
         _mlist.append(message);
     }
-    emit messagesReceived(channelId, _mlist, _hasMore);
+    emit messagesReceived(channelId, _mlist, _hasMore, threadMsgsCount);
 
-    qDebug() << "messages loaded for" << channelId << _chatsModel->chat(channelId)->name << m_teamInfo.teamId() << m_teamInfo.name();
+    qDebug() << "messages loaded for" << channelId << _chatsModel->chat(channelId)->name << m_teamInfo.teamId() << m_teamInfo.name() << _mlist.count();
     emit loadMessagesSuccess(m_teamInfo.teamId(), channelId);
 }
 
@@ -1332,7 +1367,7 @@ TeamInfo *SlackTeamClient::teamInfo()
 
 void SlackTeamClient::markChannel(ChatsModel::ChatType type, const QString& channelId, const QDateTime &time)
 {
-    DEBUG_BLOCK
+    DEBUG_BLOCK;
 
     QMap<QString, QString> params;
     params.insert(QStringLiteral("channel"), channelId);
@@ -1464,6 +1499,7 @@ void SlackTeamClient::handleConversationsListReply()
         reply->deleteLater();
         for (const QJsonValue& chatValue : data.value("channels").toArray()) {
             Chat* chat = new Chat(chatValue.toObject());
+            QQmlEngine::setObjectOwnership(chat, QQmlEngine::CppOwnership);
             if (chat == nullptr) {
                 qWarning() << __PRETTY_FUNCTION__ << "Error allocating memory for Chat";
             }
@@ -1526,8 +1562,8 @@ void SlackTeamClient::handleUsersListReply()
         reply->deleteLater();
         for (const QJsonValue& userValue : data.value("members").toArray()) {
             QPointer<User> user = new User(nullptr);
-            user->setData(userValue.toObject());
             QQmlEngine::setObjectOwnership(user, QQmlEngine::CppOwnership);
+            user->setData(userValue.toObject());
             _users.append(user);
         }
         if (!cursor.isEmpty()) {

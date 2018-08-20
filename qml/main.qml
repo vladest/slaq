@@ -73,6 +73,7 @@ ApplicationWindow {
         property int theme: Material.System
         property bool loadOnlyLastTeam: true
         property bool unloadViewOnTeamSwitch: false
+        property bool cacheSlackImages: true
     }
 
     SettingsDialog {
@@ -151,7 +152,7 @@ ApplicationWindow {
                                     anchors.centerIn: parent
                                     width: Theme.headerSize - 2
                                     height: Theme.headerSize - 2
-                                    source: model.icons.length > 1 ? "image://emoji/icon/" + model.icons[1] : ""
+                                    source: model.icons.length > 1 ? "image://emoji/slack/" + model.icons[1] : ""
                                     smooth: true
                                 }
                                 Rectangle {
@@ -193,12 +194,18 @@ ApplicationWindow {
                                 onChannelCountersUpdated: {
                                     if (teamId === model.teamId) {
                                         //unread_messages
-                                        var total = SlackClient.getTotalUnread(teamId, ChatsModel.Channel)
-                                        var totalIm = SlackClient.getTotalUnread(teamId, ChatsModel.Group)
-                                        totalIm += SlackClient.getTotalUnread(teamId, ChatsModel.Conversation)
-                                        totalIm += SlackClient.getTotalUnread(teamId, ChatsModel.MultiUserConversation)
-                                        tabButton.unreadChannelMessages = total
-                                        tabButton.unreadIMMessages = totalIm
+                                        if (unreadMessages >= 0) {
+                                            var total = SlackClient.getTotalUnread(teamId, ChatsModel.Channel)
+                                            var totalIm = SlackClient.getTotalUnread(teamId, ChatsModel.Group)
+                                            totalIm += SlackClient.getTotalUnread(teamId, ChatsModel.Conversation)
+                                            totalIm += SlackClient.getTotalUnread(teamId, ChatsModel.MultiUserConversation)
+                                            tabButton.unreadChannelMessages = total
+                                            tabButton.unreadIMMessages = totalIm
+                                        } else {
+                                            // the chat is not yet initialized, so we only know that there is new message
+                                            tabButton.unreadChannelMessages++
+                                        }
+
                                         window.recalcUnread()
                                     }
                                 }
@@ -349,7 +356,7 @@ ApplicationWindow {
             Loader {
                 id: teamloader
                 active: false
-                asynchronous: true
+                asynchronous: false
                 sourceComponent: Team {
                     slackClient: SlackClient.slackClient(model.teamId)
                     teamId: model.teamId

@@ -51,7 +51,7 @@ signals:
 
     void messageReceived(const QString& teamId, QVariantMap message);
     void messageUpdated(const QString& teamId, QVariantMap message);
-    void channelCountersUpdated(const QString& teamId, const QString& channelId, int unread_messages);
+    void channelCountersUpdated(const QString& teamId, const QString& channelId, int unreadMessages);
     void channelJoined(const QString& teamId, const QString& channelId);
     void channelLeft(const QString& teamId, const QString& channelId);
     void userUpdated(const QString& teamId, QVariantMap user);
@@ -136,7 +136,7 @@ public slots:
     void onConversationsDataChanged(const QList<Chat *> &chats, bool last);
     void onConversationMembersChanged(const QString &channelId, const QStringList& members, bool last);
     void onUsersPresenceChanged(const QList<QPointer<User> > &users, const QString &presence);    
-    void onMessagesReceived(const QString &channelId, QList<Message *> messages, bool hasMore);
+    void onMessagesReceived(const QString &channelId, QList<Message *> messages, bool hasMore, int threadMsgsCount);
 
 protected:
     void run();

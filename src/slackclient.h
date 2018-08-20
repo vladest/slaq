@@ -19,7 +19,6 @@
 #include "messageformatter.h"
 #include "teaminfo.h"
 #include "storage.h"
-#include "debugblock.h"
 
 class SlackTeamClient : public QObject
 {
@@ -27,7 +26,7 @@ class SlackTeamClient : public QObject
 
 
 public:
-    explicit SlackTeamClient(const QString& teamId, const QString &accessToken = QString(""), QObject *parent = nullptr);
+    explicit SlackTeamClient(QObject *spawner, const QString& teamId, const QString &accessToken = QString(""), QObject *parent = nullptr);
     virtual ~SlackTeamClient();
 
     Q_INVOKABLE void setAppActive(bool active);
@@ -78,7 +77,7 @@ signals:
 
     // signals to main thread
     void messageReceived(Message* message);
-    void messagesReceived(const QString &channelId, QList<Message*> messages, bool hasMore);
+    void messagesReceived(const QString &channelId, QList<Message*> messages, bool hasMore, int threadMsgsCount);
     void searchMessagesReceived(const QJsonArray& matches, int total, const QString& query, int page, int pages);
     void messageUpdated(Message* message);
     void messageDeleted(const QString& channelId, const QDateTime& ts);
@@ -203,7 +202,9 @@ private:
 
     QString historyMethod(const ChatsModel::ChatType type);
     QString markMethod(ChatsModel::ChatType type);
+    void addTeamEmoji(const QString &name, const QString &url);
 
+private:
     QPointer<QNetworkAccessManager> networkAccessManager;
     QPointer<SlackConfig> config;
     QPointer<SlackStream> stream;
@@ -214,6 +215,8 @@ private:
     TeamInfo m_teamInfo;
     ClientStates m_state { ClientStates::UNINITIALIZED };
     ClientStatus m_status { ClientStatus::UNDEFINED };
+    QObject *m_spawner { nullptr };
+
 };
 
 QML_DECLARE_TYPE(SlackTeamClient)

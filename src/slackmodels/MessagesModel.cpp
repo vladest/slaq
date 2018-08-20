@@ -9,6 +9,7 @@
 #include "ChatsModel.h"
 #include "MessagesModel.h"
 #include "messageformatter.h"
+#include "debugblock.h"
 
 MessageListModel::MessageListModel(QObject *parent, UsersModel *usersModel, const QString &channelId, bool isThreadModel) : QAbstractListModel(parent),
     m_usersModel(usersModel), m_channelId(channelId), m_isThreadModel(isThreadModel) {
@@ -136,6 +137,16 @@ Message *MessageListModel::message(const QDateTime &ts)
         if (message->time == ts) {
             return message;
         }
+        // 1st message in the message thread is parent message
+        // so to avoid recursive search - check if the message thread its not current thread
+        if (!message->messageThread.isNull() && message->messageThread.data() != this) {
+            locker.unlock();
+            Message* threadedMsg = message->messageThread->message(ts);
+            if (threadedMsg != nullptr) {
+                return threadedMsg;
+            }
+            locker.relock();
+        }
     }
     return nullptr;
 }
@@ -246,6 +257,7 @@ void MessageListModel::preprocessMessage(Message *message)
             //try to construct user from message
             if (!message->user_id.isEmpty() && !message->userName.isEmpty()) {
                 QPointer<::User> _user = new ::User(message->user_id, message->userName, nullptr);
+                QQmlEngine::setObjectOwnership(_user, QQmlEngine::CppOwnership);
                 message->user = _user;
                 m_usersModel->addUser(_user);
             }
@@ -412,6 +424,7 @@ void MessageListModel::findNewUsers(QString& message)
         if (user.isNull()) {
             QString name = match.captured(2);
             user = new ::User(id, name, nullptr);
+            QQmlEngine::setObjectOwnership(user, QQmlEngine::CppOwnership);
             m_usersModel->addUser(user);
             m_formatter.replaceUserInfo(user.data(), message);
         }
@@ -427,12 +440,13 @@ void MessageListModel::findNewUsers(QString& message)
     }
 }
 
-void MessageListModel::addMessages(const QList<Message*> &messages, bool hasMore)
+void MessageListModel::addMessages(const QList<Message*> &messages, bool hasMore, int threadMsgsCount)
 {
-    qDebug() << "Adding" << messages.count() << "messages" << QThread::currentThreadId();
+    DEBUG_BLOCK;
+    qDebug() << "Adding" << messages.count() << "messages" << QThread::currentThreadId() << hasMore << threadMsgsCount;
 
     m_hasMore = hasMore;
-    beginInsertRows(QModelIndex(), m_messages.count(), m_messages.count() + messages.count() - 1);
+    beginInsertRows(QModelIndex(), m_messages.count(), m_messages.count() + messages.count() - 1 - threadMsgsCount);
 
     for (Message* message : messages) {
         preprocessMessage(message);
@@ -633,6 +647,7 @@ void Attachment::setData(const QJsonObject &data)
 
     foreach (const QJsonValue &fieldValue, data.value(QStringLiteral("fields")).toArray()) {
         AttachmentField* field = new AttachmentField;
+        QQmlEngine::setObjectOwnership(field, QQmlEngine::CppOwnership);
         field->setData((fieldValue.toObject()));
         fields.append(field);
     }

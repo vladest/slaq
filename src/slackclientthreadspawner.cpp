@@ -3,6 +3,7 @@
 
 #include "slackclientthreadspawner.h"
 #include "searchmessagesmodel.h"
+#include "debugblock.h"
 
 SlackClientThreadSpawner::SlackClientThreadSpawner(QObject *parent) :
     QThread(parent)
@@ -390,6 +391,14 @@ void SlackClientThreadSpawner::onMessageReceived(Message *message)
         delete message;
         return;
     }
+    Chat* chat = _chatsModel->chat(message->channel_id);
+    if (chat == nullptr) {
+        qWarning() << "Chat for channel ID" << message->channel_id << "not found";
+        emit channelCountersUpdated(_slackClient->teamInfo()->teamId(), message->channel_id, -1);
+        return;
+    }
+    emit channelCountersUpdated(_slackClient->teamInfo()->teamId(), chat->id, chat->unreadCountDisplay);
+
     MessageListModel *messages = _chatsModel->messages(message->channel_id);
     if (messages == nullptr) {
         qWarning() << "No messages in chat" << message->channel_id;
@@ -398,15 +407,9 @@ void SlackClientThreadSpawner::onMessageReceived(Message *message)
     }
 
     messages->addMessage(message);
-    Chat* chat = _chatsModel->chat(message->channel_id);
-    if (chat == nullptr) {
-        qWarning() << "Chat for channel ID" << message->channel_id << "not found";
-        return;
-    }
-    emit channelCountersUpdated(_slackClient->teamInfo()->teamId(), chat->id, chat->unreadCountDisplay);
 }
 
-void SlackClientThreadSpawner::onMessagesReceived(const QString& channelId, QList<Message*> messages, bool hasMore)
+void SlackClientThreadSpawner::onMessagesReceived(const QString& channelId, QList<Message*> messages, bool hasMore, int threadMsgsCount)
 {
     SlackTeamClient* _slackClient = static_cast<SlackTeamClient*>(sender());
 
@@ -422,8 +425,9 @@ void SlackClientThreadSpawner::onMessagesReceived(const QString& channelId, QLis
         return;
     }
 
-    messagesModel->addMessages(messages, hasMore);
+    messagesModel->addMessages(messages, hasMore, threadMsgsCount);
 }
+
 void SlackClientThreadSpawner::onMessageUpdated(Message *message)
 {
     DEBUG_BLOCK;
@@ -556,7 +560,7 @@ void SlackClientThreadSpawner::onTeamInfoChanged(const QString &teamId)
 }
 
 SlackTeamClient* SlackClientThreadSpawner::createNewClientInstance(const QString &teamId, const QString &accessToken) {
-    SlackTeamClient* _slackClient = new SlackTeamClient(teamId, accessToken);
+    SlackTeamClient* _slackClient = new SlackTeamClient(this, teamId, accessToken);
     QQmlEngine::setObjectOwnership(_slackClient, QQmlEngine::CppOwnership);
 
     connect(_slackClient, &SlackTeamClient::testConnectionFail, this, &SlackClientThreadSpawner::testConnectionFail, Qt::QueuedConnection);

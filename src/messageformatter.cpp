@@ -6,6 +6,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QGuiApplication>
+#include <QPalette>
 #include "imagescache.h"
 
 #include "UsersModel.h"
@@ -22,7 +24,7 @@ MessageFormatter::MessageFormatter() :
     m_codeBlockPattern(QRegularExpression(QStringLiteral("```([^`]+)```"))),
     m_variableLabelPattern(QRegularExpression(QStringLiteral("<!(here|channel|group|everyone)\\|([^>]+)>"))),
     m_variablePattern(QRegularExpression(QStringLiteral("<!(here|channel|group|everyone)>"))),
-    m_emojiPattern(QRegularExpression(QStringLiteral(":([\\w\\+\\-]+):(:[\\w\\+\\-]+:)?[\\?\\.!]?"))),
+    m_emojiPattern(QRegularExpression(QStringLiteral(":([\\w\\+\\-]+):?:([skin-tone\\w\\+\\-]+)?:?[\\?\\.!]?"))),
     m_channelPattern(QRegularExpression(QStringLiteral("<#([A-Z0-9]+)|([^>]+)>")))
 {
     m_labelPattern.optimize();
@@ -88,11 +90,15 @@ void MessageFormatter::replaceLinks(QString &message)
 
 void MessageFormatter::replaceMarkdown(QString &message)
 {
+    const QPalette& palette = QGuiApplication::palette();
+    const QString& blockStyleBg = palette.color(QPalette::Highlight).name(QColor::HexRgb);
+    const QString& blockStyleFg = palette.color(QPalette::HighlightedText).name(QColor::HexRgb);
+
     message.replace(m_italicPattern, QStringLiteral("\\1<i>\\2</i>\\3"));
     message.replace(m_boldPattern, QStringLiteral("\\1<b>\\2</b>\\3"));
     message.replace(m_strikePattern, QStringLiteral("\\1<s>\\2</s>\\3"));
-    message.replace(m_codeBlockPattern, QStringLiteral("<span style=\"background-color:rgba(255,0,0,0.07); color:black; white-space:pre;\">\\1</span>"));
-    message.replace(m_codePattern, QStringLiteral("\\1<span style=\"background-color:rgba(255,0,0,0.07); color:black; white-space:pre;\"> \\2 </span>\\3"));
+    message.replace(m_codeBlockPattern, QStringLiteral("<blockquote><table style=\"background-color:%1; color:%2; word-wrap:break-word;\"><tr><td>\\1</td></tr></table></blockquote>").arg(blockStyleBg).arg(blockStyleFg));
+    message.replace(m_codePattern, QStringLiteral("\\1<span style=\"background-color:%1; color:%2; white-space:pre;\"> \\2 </span>\\3").arg(blockStyleBg).arg(blockStyleFg));
     message.replace(QStringLiteral("\n"), QStringLiteral("<br/>"));
 }
 
@@ -104,10 +110,14 @@ void MessageFormatter::replaceEmoji(QString &message)
     ImagesCache* imageCache = ImagesCache::instance();
 
     QRegularExpressionMatchIterator i = m_emojiPattern.globalMatch(message);
+    if (!i.isValid()) {
+        qWarning() << "error parsing" << message << m_emojiPattern.errorString();
+        return;
+    }
     while (i.hasNext()) {
         QRegularExpressionMatch match = i.next();
-        QString captured = match.captured();
-        captured.replace(QStringLiteral(":"), QStringLiteral(""));
+        QString captured = match.captured(1);
+        //captured.replace(QStringLiteral(":"), QStringLiteral(""));
         //qDebug() << "captured" << captured;
         EmojiInfo* einfo = imageCache->getEmojiInfo(captured);
         if (einfo != nullptr) {
@@ -123,6 +133,8 @@ void MessageFormatter::replaceEmoji(QString &message)
                 message.replace(match.captured(), replacement);
                 //qDebug() << "emoji image" << captured << message;
             }
+        } else {
+            qWarning() << "Emoji not found for" << captured << "message:" << message;
         }
     }
 }

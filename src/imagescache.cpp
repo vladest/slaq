@@ -17,10 +17,15 @@
 #include <QtNetwork/QNetworkReply>
 #include <QMutableListIterator>
 
+#include <QImageReader>
+
+static const QString slackImagesSubdir = "slack_images_cache";
+static const QString slackImagesPrefix = "slack/";
+
 ImagesCache::ImagesCache(QObject *parent) : QObject(parent)
 {
     m_cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/images";
-    QDir iconsCacheDir(m_cache + QDir::separator() + "icons");
+    QDir iconsCacheDir(m_cache + QDir::separator() + slackImagesSubdir);
     if (!iconsCacheDir.exists()) {
         iconsCacheDir.mkpath(iconsCacheDir.path());
     }
@@ -77,6 +82,7 @@ ImagesCache::ImagesCache(QObject *parent) : QObject(parent)
                                                            QStringLiteral(""), true ));
     QSettings settings;
     const QString imagesSet = settings.value(QStringLiteral("emojisSet"), "Unicode").toString();
+    m_cacheSlackImages = settings.value(QStringLiteral("cacheSlackImages"),true).toBool();
     QThread *thread = QThread::create([&]{
         parseSlackJson();
     });
@@ -122,18 +128,41 @@ QImage ImagesCache::image(const QString &id)
     bool cached_ = false;
     EmojiInfo* einfo = nullptr;
 
-    if (id.startsWith(QStringLiteral("icon/"))) {
+    if (id.startsWith(slackImagesPrefix)) {
         //icons ids started with icon/following by url:
         // icon/https://slack-files2.s3-us-west-2.amazonaws.com/avatars/2017-10-19/259793453543_4b3c2e1f2d0926ea6415_original.png
+        if (m_cacheSlackImages == false) {
+            if (m_requestedImages.contains(id)) {
+                image_ = m_requestedImages.value(id);
+                m_requestedImages.remove(id);
+            } else {
+                emit requestImageViaHttp(id);
+            }
+            return image_;
+        }
         QString iconPath = id;
-        iconPath.remove(0, 5);
+        iconPath.remove(0, slackImagesPrefix.size());
+        if (iconPath.isEmpty()) {
+            qWarning() << "Empty id" << id;
+            return image_;
+        }
         QUrl iconUrl(iconPath);
 
-        path_ = m_cache + QDir::separator() + QStringLiteral("icons")
+        path_ = m_cache + QDir::separator() + slackImagesSubdir
                 + QDir::separator() + iconUrl.fileName();
         cached_ = m_iconsCached.contains(path_);
     } else {
-        einfo = m_emojiList.value(id);
+        int skinTone = id.indexOf("::skin-tone");
+        QString noSkinToneId = id;
+        if (skinTone != -1) {
+            int skinToneEnds = id.indexOf(":", skinTone + 2); //skip "::"
+            if (skinToneEnds != -1) {
+                noSkinToneId = noSkinToneId.remove(skinTone, skinToneEnds - skinTone);
+            } else {
+                noSkinToneId = noSkinToneId.remove(skinTone, 13);
+            }
+        }
+        einfo = m_emojiList.value(noSkinToneId);
         if (einfo != nullptr) {
             //qDebug() << "image is" << id << m_emojiList.contains(id) << m_emojiList.value(id)->cached();
             if (einfo->imagesExist() & EmojiInfo::ImageSlackTeam) {
@@ -143,10 +172,10 @@ QImage ImagesCache::image(const QString &id)
             } else {
                 path_ = m_cache + QDir::separator() +
                         m_imagesSetsFolders.at(m_currentImagesSetIndex) + QDir::separator() +
-                        m_emojiList.value(id)->image();
+                        einfo->image();
             }
 
-            cached_ = m_emojiList.value(id)->cached();
+            cached_ = einfo->cached();
         } else {
             qWarning() << "invalid id" << id;
             return image_;
@@ -158,15 +187,20 @@ QImage ImagesCache::image(const QString &id)
     }
 
     if (cached_) {
-        //qDebug() << "loading image" << path_;
-        if (!image_.load(path_)) {
-            qWarning() << "Error loading image" << path_;
+        QImageReader imgReader(path_);
+        //sometimes image file extention does not corresponds with its content
+        //so detect image by content only
+        imgReader.setDecideFormatFromContent(true);
+        //qDebug() << "loading image" << path_ << imgFormat;
+        image_ = imgReader.read();
+        if (image_.isNull()) {
+            qWarning() << "Error loading image" << path_ << imgReader.errorString() << id;
         }
     } else {
         emit requestImageViaHttp(id);
     }
 
-    if (id.startsWith(QStringLiteral("icon/"))) {
+    if (id.startsWith(slackImagesPrefix)) {
         if (cached_) {
             m_iconsCached.insert(path_);
         }
@@ -179,9 +213,9 @@ QImage ImagesCache::image(const QString &id)
 void ImagesCache::onImageRequestedViaHttp(const QString &id)
 {
     QUrl url;
-    if (id.startsWith(QStringLiteral("icon/"))) {
+    if (id.startsWith(slackImagesPrefix)) {
         QString iconPath = id;
-        iconPath.remove(0, 5);
+        iconPath.remove(0, slackImagesPrefix.size());
         url.setUrl(iconPath);
     } else {
         EmojiInfo* einfo = m_emojiList.value(id);
@@ -337,19 +371,27 @@ void ImagesCache::onImageRequestFinished()
         const QString& id = reply->request().attribute(QNetworkRequest::User).toString();
         if (!id.isEmpty()) {
             QFile f;
-            if (id.startsWith(QStringLiteral("icon/"))) {
-                QString iconPath = id;
-                iconPath.remove(0, 5);
-                QUrl url(iconPath);
-                const QString& filename = url.fileName();
-                f.setFileName(m_cache + QDir::separator() +
-                              "icons" + QDir::separator() +
-                              filename);
-                if (!m_iconsCached.contains(filename)) {
-                    m_iconsCached << filename;
+            if (id.startsWith(slackImagesPrefix)) {
+                if (m_cacheSlackImages == false) {
+                    QImage img;
+                    img.loadFromData(arr);
+                    m_requestedImages[id] = img;
+                    emit imageLoaded(id);
+                    return;
+                } else {
+                    QString iconPath = id;
+                    iconPath.remove(0, slackImagesPrefix.size());
+                    QUrl url(iconPath);
+                    const QString& filename = url.fileName();
+                    f.setFileName(m_cache + QDir::separator() +
+                                  slackImagesSubdir + QDir::separator() +
+                                  filename);
+                    if (!m_iconsCached.contains(filename)) {
+                        m_iconsCached << filename;
+                    }
                 }
-
             } else {
+                QFile f;
                 EmojiInfo* einfo = m_emojiList.value(id);
                 if (einfo == nullptr) {
                     qWarning() << "id is not found" << id;
@@ -372,7 +414,6 @@ void ImagesCache::onImageRequestFinished()
             f.open(QIODevice::WriteOnly);
             f.write(arr);
             f.close();
-
             emit imageLoaded(id);
         } else {
             qWarning() << "id is empty";
@@ -386,7 +427,7 @@ void ImagesCache::onImageRequestFinished()
 void ImagesCache::checkImagesPresence()
 {
     QThread *thread = QThread::create([&]{
-        QDir iconsCacheDir(m_cache + QDir::separator() + "icons");
+        QDir iconsCacheDir(m_cache + QDir::separator() + slackImagesSubdir);
         if (!iconsCacheDir.exists()) {
             iconsCacheDir.mkpath(iconsCacheDir.path());
         }
